@@ -1,0 +1,13 @@
+{
+  "name": "irairabou-meiro",
+  "version": "1.0.0",
+  "description": "いらぼうでめいろ - 子供向け迷路ゲーム",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "devDependencies": {
+    "vite": "^6.0.0"
+  }
+}
