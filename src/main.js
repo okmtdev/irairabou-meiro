@@ -97,7 +97,6 @@ let invincible = false;
 let invincibleTimer = null;
 let frozen = false; // player cannot move during knockback
 let frozenTimer = null;
-let mouseDown = false;
 let gameStarted = false;
 
 // ============================================================
@@ -122,17 +121,30 @@ function isExtraUnlocked() {
 }
 
 // ============================================================
-// Sound effects (simple oscillator-based)
+// Audio System
 // ============================================================
 let audioCtx = null;
+let bgmGain = null;
+let bgmPlaying = false;
+let bgmNodes = [];
+const BGM_VOLUME = 0.08;
+const SE_VOLUME = 0.18;
+
 function getAudioCtx() {
   if (!audioCtx) {
     audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    bgmGain = audioCtx.createGain();
+    bgmGain.gain.value = BGM_VOLUME;
+    bgmGain.connect(audioCtx.destination);
+  }
+  if (audioCtx.state === 'suspended') {
+    audioCtx.resume();
   }
   return audioCtx;
 }
 
-function playSound(freq, duration, type = 'square', volume = 0.15) {
+// --- SE (Sound Effects) ---
+function playSound(freq, duration, type = 'square', volume = SE_VOLUME) {
   try {
     const ac = getAudioCtx();
     const osc = ac.createOscillator();
@@ -150,26 +162,166 @@ function playSound(freq, duration, type = 'square', volume = 0.15) {
   }
 }
 
+function playMoveSound() {
+  playSound(600, 0.04, 'sine', 0.06);
+}
+
 function playDamageSound() {
-  playSound(200, 0.3, 'sawtooth', 0.2);
-  setTimeout(() => playSound(150, 0.2, 'sawtooth', 0.15), 100);
+  playSound(180, 0.15, 'sawtooth', 0.25);
+  setTimeout(() => playSound(120, 0.25, 'sawtooth', 0.2), 80);
+  setTimeout(() => playSound(90, 0.15, 'sawtooth', 0.15), 180);
 }
 
 function playClearSound() {
-  playSound(523, 0.15, 'square', 0.15);
-  setTimeout(() => playSound(659, 0.15, 'square', 0.15), 150);
-  setTimeout(() => playSound(784, 0.3, 'square', 0.15), 300);
+  const notes = [523, 659, 784, 1047];
+  notes.forEach((f, i) => {
+    setTimeout(() => playSound(f, 0.2, 'square', 0.15), i * 130);
+  });
+  setTimeout(() => playSound(1047, 0.5, 'sine', 0.12), 520);
 }
 
 function playGameOverSound() {
-  playSound(400, 0.2, 'sawtooth', 0.15);
-  setTimeout(() => playSound(300, 0.2, 'sawtooth', 0.15), 200);
-  setTimeout(() => playSound(200, 0.4, 'sawtooth', 0.15), 400);
+  playSound(350, 0.25, 'sawtooth', 0.2);
+  setTimeout(() => playSound(280, 0.25, 'sawtooth', 0.18), 200);
+  setTimeout(() => playSound(200, 0.25, 'sawtooth', 0.15), 400);
+  setTimeout(() => playSound(150, 0.5, 'sawtooth', 0.12), 600);
 }
 
 function playAppleSound() {
-  playSound(880, 0.1, 'sine', 0.15);
-  setTimeout(() => playSound(1100, 0.15, 'sine', 0.15), 100);
+  playSound(880, 0.08, 'sine', 0.15);
+  setTimeout(() => playSound(1100, 0.08, 'sine', 0.15), 80);
+  setTimeout(() => playSound(1320, 0.15, 'sine', 0.12), 160);
+}
+
+function playStartSound() {
+  playSound(440, 0.1, 'square', 0.12);
+  setTimeout(() => playSound(554, 0.1, 'square', 0.12), 100);
+  setTimeout(() => playSound(659, 0.15, 'square', 0.12), 200);
+}
+
+function playCountdownSound() {
+  playSound(880, 0.08, 'square', 0.1);
+}
+
+// --- BGM System (procedural chiptune) ---
+// Title BGM: happy bouncy melody
+const TITLE_MELODY = [
+  // [note, duration in beats]
+  [392, 1], [440, 1], [494, 1], [523, 1],
+  [587, 2], [523, 1], [494, 1],
+  [440, 2], [392, 1], [440, 1],
+  [494, 2], [440, 1], [392, 1],
+  [349, 2], [330, 1], [349, 1],
+  [392, 2], [440, 1], [494, 1],
+  [523, 2], [587, 1], [523, 1],
+  [494, 4],
+];
+
+// Game BGM: slightly tense, faster
+const GAME_MELODY = [
+  [330, 1], [349, 1], [392, 1], [330, 1],
+  [349, 1], [294, 1], [330, 1], [262, 1],
+  [294, 1], [330, 1], [349, 1], [392, 1],
+  [440, 2], [392, 1], [349, 1],
+  [330, 1], [294, 1], [262, 1], [294, 1],
+  [330, 2], [294, 1], [262, 1],
+  [247, 1], [262, 1], [294, 1], [330, 1],
+  [349, 4],
+];
+
+// Game BGM bass line
+const GAME_BASS = [
+  [131, 2], [147, 2], [165, 2], [131, 2],
+  [147, 2], [131, 2], [165, 2], [175, 2],
+  [131, 2], [147, 2], [165, 2], [131, 2],
+  [123, 2], [131, 2], [147, 2], [165, 2],
+];
+
+let currentBgmType = null;
+
+function stopBgm() {
+  bgmPlaying = false;
+  currentBgmType = null;
+  for (const node of bgmNodes) {
+    try { node.stop(); } catch {}
+  }
+  bgmNodes = [];
+}
+
+function playBgm(type) {
+  if (!audioCtx) return;
+  if (currentBgmType === type && bgmPlaying) return;
+
+  stopBgm();
+  bgmPlaying = true;
+  currentBgmType = type;
+
+  if (type === 'title') {
+    scheduleMelodyLoop(TITLE_MELODY, 'square', 160, 0.6);
+  } else if (type === 'game') {
+    scheduleMelodyLoop(GAME_MELODY, 'square', 180, 0.5);
+    scheduleMelodyLoop(GAME_BASS, 'triangle', 180, 0.7);
+  }
+}
+
+function scheduleMelodyLoop(melody, oscType, bpm, gainMult) {
+  const ac = getAudioCtx();
+  const beatDur = 60 / bpm;
+
+  function scheduleIteration() {
+    if (!bgmPlaying) return;
+
+    let time = ac.currentTime + 0.05;
+    for (const [freq, beats] of melody) {
+      if (!bgmPlaying) return;
+
+      const dur = beats * beatDur;
+      const osc = ac.createOscillator();
+      const gain = ac.createGain();
+
+      osc.type = oscType;
+      osc.frequency.value = freq;
+      gain.gain.setValueAtTime(BGM_VOLUME * gainMult, time);
+      gain.gain.setValueAtTime(BGM_VOLUME * gainMult, time + dur * 0.7);
+      gain.gain.exponentialRampToValueAtTime(0.001, time + dur * 0.95);
+
+      osc.connect(gain);
+      gain.connect(bgmGain);
+      osc.start(time);
+      osc.stop(time + dur);
+      bgmNodes.push(osc);
+
+      time += dur;
+    }
+
+    // Schedule next loop
+    const totalDur = melody.reduce((s, [, b]) => s + b, 0) * beatDur;
+    const loopTimeout = setTimeout(() => {
+      // Clean up old nodes
+      bgmNodes = bgmNodes.filter(n => {
+        try { n.stop(); } catch {}
+        return false;
+      });
+      if (bgmPlaying && currentBgmType) {
+        scheduleIteration();
+      }
+    }, totalDur * 1000);
+
+    // Store timeout ref for cleanup
+    bgmNodes._loopTimeout = loopTimeout;
+  }
+
+  scheduleIteration();
+}
+
+function stopBgmFull() {
+  bgmPlaying = false;
+  currentBgmType = null;
+  if (bgmNodes._loopTimeout) clearTimeout(bgmNodes._loopTimeout);
+  for (const node of bgmNodes) {
+    try { node.stop(); } catch {}
+  }
+  bgmNodes = [];
 }
 
 // ============================================================
@@ -178,6 +330,7 @@ function playAppleSound() {
 function showTitle() {
   state = 'title';
   stopTimer();
+  stopBgm();
   uiLayer.innerHTML = '';
 
   const div = document.createElement('div');
@@ -195,6 +348,7 @@ function showTitle() {
 
   document.getElementById('btn-start').addEventListener('click', () => {
     getAudioCtx(); // unlock audio on user gesture
+    playBgm('title');
     showStageSelect();
   });
 }
@@ -269,7 +423,6 @@ function startGame(stageKey) {
   timeLeft = cfg.timeLimit;
   invincible = false;
   frozen = false;
-  mouseDown = false;
   gameStarted = false;
   appleCollected = false;
 
@@ -305,6 +458,8 @@ function startGame(stageKey) {
 
   state = 'playing';
   uiLayer.innerHTML = '';
+  cursorPos = { x: -1, y: -1 };
+  movementActive = false;
 
   startTimer();
   requestAnimationFrame(gameLoop);
@@ -319,6 +474,9 @@ function startTimer() {
     if (state !== 'playing') return;
     if (!gameStarted) return;
     timeLeft -= 1;
+    if (timeLeft <= 10 && timeLeft > 0) {
+      playCountdownSound();
+    }
     if (timeLeft <= 0) {
       timeLeft = 0;
       gameOver();
@@ -475,7 +633,7 @@ function drawHUD() {
     ctx.font = 'bold 18px sans-serif';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.fillText('ねずみをクリック/タッチしてスタート！', canvasW / 2, mazeOffsetY - 15);
+    ctx.fillText('ねずみをクリック/タッチしてスタート！あとはカーソルでうごかそう', canvasW / 2, mazeOffsetY - 15);
   }
 }
 
@@ -620,6 +778,7 @@ function takeDamage() {
 function gameOver() {
   state = 'gameover';
   stopTimer();
+  stopBgm();
   playGameOverSound();
 
   setTimeout(() => {
@@ -637,14 +796,20 @@ function gameOver() {
     `;
     uiLayer.appendChild(div);
 
-    document.getElementById('btn-retry').addEventListener('click', () => startGame(currentStage));
-    document.getElementById('btn-title').addEventListener('click', showTitle);
+    document.getElementById('btn-retry').addEventListener('click', () => {
+      startGame(currentStage);
+    });
+    document.getElementById('btn-title').addEventListener('click', () => {
+      playBgm('title');
+      showTitle();
+    });
   }, 500);
 }
 
 function stageClear() {
   state = 'clear';
   stopTimer();
+  stopBgm();
   setClearStatus(currentStage);
   playClearSound();
 
@@ -684,14 +849,27 @@ function stageClear() {
       nextBtn.style.display = 'none';
     }
 
-    document.getElementById('btn-select').addEventListener('click', showStageSelect);
-    document.getElementById('btn-title2').addEventListener('click', showTitle);
+    document.getElementById('btn-select').addEventListener('click', () => {
+      playBgm('title');
+      showStageSelect();
+    });
+    document.getElementById('btn-title2').addEventListener('click', () => {
+      playBgm('title');
+      showTitle();
+    });
   }, 500);
 }
 
 // ============================================================
 // Input Handling
 // ============================================================
+// Movement is activated by clicking/touching the mouse character,
+// then the player follows the cursor/finger without needing to hold down.
+// On PC: hover to move (no click holding needed).
+// On touch: drag to move (finger must stay on screen).
+let cursorPos = { x: -1, y: -1 }; // current cursor grid position
+let movementActive = false; // true after player clicks on mouse to start
+
 function getGridPos(clientX, clientY) {
   const rect = canvas.getBoundingClientRect();
   const mx = clientX - rect.left;
@@ -706,12 +884,9 @@ function isOnPlayer(clientX, clientY) {
   return gx === player.x && gy === player.y;
 }
 
-function tryMovePlayer(clientX, clientY) {
+function tryMovePlayerToward(gx, gy) {
   if (state !== 'playing' || frozen) return;
 
-  const { gx, gy } = getGridPos(clientX, clientY);
-
-  // Check if adjacent to player (or same cell)
   const dx = gx - player.x;
   const dy = gy - player.y;
 
@@ -724,7 +899,7 @@ function tryMovePlayer(clientX, clientY) {
   } else if (dy !== 0) {
     moveY = dy > 0 ? 1 : -1;
   } else {
-    return; // Same cell
+    return; // Same cell, no movement needed
   }
 
   const nx = player.x + moveX;
@@ -735,7 +910,6 @@ function tryMovePlayer(clientX, clientY) {
 
   // Check if wall
   if (maze[ny][nx] === 0) {
-    // Hit wall - take damage
     takeDamage();
     return;
   }
@@ -744,6 +918,7 @@ function tryMovePlayer(clientX, clientY) {
   player.x = nx;
   player.y = ny;
   playerTrail.push({ x: nx, y: ny });
+  playMoveSound();
 
   // Keep trail at reasonable size
   if (playerTrail.length > 200) {
@@ -754,80 +929,92 @@ function tryMovePlayer(clientX, clientY) {
   checkGoal();
 }
 
-// Continuous movement tracking
+// Continuous movement: the game loop calls this to auto-move toward cursor
 let lastMoveTime = 0;
-const MOVE_COOLDOWN = 120; // ms between moves
+const MOVE_COOLDOWN = 100; // ms between auto-moves
 
-function handlePointerMove(clientX, clientY) {
-  if (!mouseDown || !gameStarted || state !== 'playing' || frozen) return;
+function autoMoveTowardCursor(timestamp) {
+  if (!movementActive || !gameStarted || state !== 'playing' || frozen) return;
+  if (cursorPos.x < 0 || cursorPos.y < 0) return;
 
-  const now = Date.now();
+  const now = timestamp || performance.now();
   if (now - lastMoveTime < MOVE_COOLDOWN) return;
-  lastMoveTime = now;
 
-  tryMovePlayer(clientX, clientY);
+  // Only move if cursor is not on the same cell as player
+  if (cursorPos.x === player.x && cursorPos.y === player.y) return;
+
+  lastMoveTime = now;
+  tryMovePlayerToward(cursorPos.x, cursorPos.y);
 }
 
-// Mouse events
-canvas.addEventListener('mousedown', (e) => {
-  e.preventDefault();
+function updateCursorPos(clientX, clientY) {
+  const { gx, gy } = getGridPos(clientX, clientY);
+  cursorPos = { x: gx, y: gy };
+}
+
+function handleActivation(clientX, clientY) {
   if (state !== 'playing') return;
 
   if (!gameStarted) {
-    if (isOnPlayer(e.clientX, e.clientY)) {
+    // Must click on the mouse to start the game
+    if (isOnPlayer(clientX, clientY)) {
       gameStarted = true;
-      mouseDown = true;
+      movementActive = true;
+      playStartSound();
+      playBgm('game');
+      updateCursorPos(clientX, clientY);
     }
     return;
   }
 
-  mouseDown = true;
-  lastMoveTime = 0;
-  tryMovePlayer(e.clientX, e.clientY);
+  // If game already started, activate movement
+  movementActive = true;
+  updateCursorPos(clientX, clientY);
+}
+
+// --- Mouse events (PC): click to activate, then hover to move ---
+canvas.addEventListener('mousedown', (e) => {
+  e.preventDefault();
+  handleActivation(e.clientX, e.clientY);
 });
 
 canvas.addEventListener('mousemove', (e) => {
   e.preventDefault();
-  handlePointerMove(e.clientX, e.clientY);
-});
-
-canvas.addEventListener('mouseup', () => {
-  mouseDown = false;
+  if (state !== 'playing') return;
+  updateCursorPos(e.clientX, e.clientY);
+  // On PC, once activated, hovering is enough to move
 });
 
 canvas.addEventListener('mouseleave', () => {
-  mouseDown = false;
+  // Stop movement when cursor leaves canvas
+  cursorPos = { x: -1, y: -1 };
 });
 
-// Touch events
+// --- Touch events (mobile): touch to activate, drag to move ---
 canvas.addEventListener('touchstart', (e) => {
   e.preventDefault();
-  if (state !== 'playing') return;
-  const touch = e.touches[0];
-
-  if (!gameStarted) {
-    if (isOnPlayer(touch.clientX, touch.clientY)) {
-      gameStarted = true;
-      mouseDown = true;
-    }
-    return;
+  if (e.touches.length > 0) {
+    const touch = e.touches[0];
+    handleActivation(touch.clientX, touch.clientY);
   }
-
-  mouseDown = true;
-  lastMoveTime = 0;
-  tryMovePlayer(touch.clientX, touch.clientY);
 }, { passive: false });
 
 canvas.addEventListener('touchmove', (e) => {
   e.preventDefault();
-  if (e.touches.length > 0) {
-    handlePointerMove(e.touches[0].clientX, e.touches[0].clientY);
-  }
+  if (state !== 'playing' || e.touches.length === 0) return;
+  const touch = e.touches[0];
+  updateCursorPos(touch.clientX, touch.clientY);
 }, { passive: false });
 
 canvas.addEventListener('touchend', (e) => {
   e.preventDefault();
-  mouseDown = false;
+  // On touch, stop movement when finger lifts
+  cursorPos = { x: -1, y: -1 };
+}, { passive: false });
+
+canvas.addEventListener('touchcancel', (e) => {
+  e.preventDefault();
+  cursorPos = { x: -1, y: -1 };
 }, { passive: false });
 
 // ============================================================
@@ -846,6 +1033,7 @@ function gameLoop(timestamp) {
 
   updateEnemies(timestamp);
   checkEnemyCollision();
+  autoMoveTowardCursor(timestamp);
   draw();
 
   lastTimestamp = timestamp;
